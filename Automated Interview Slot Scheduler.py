@@ -13,6 +13,9 @@ class TimeSlot:
     day: str
     hour: str
 
+    def __str__(self):
+        return f"{self.day} at {self.hour}"
+
 
 @dataclass
 class Candidate:
@@ -26,7 +29,6 @@ class Candidate:
 class Interviewer:
     id: str
     name: str
-    available_slots: List[TimeSlot]
 
 
 # =====================================================
@@ -35,7 +37,9 @@ class Interviewer:
 
 class AStarScheduler:
 
-    def select_best_slot(self, candidate_slots):
+    def select_best_slot(self, candidate_slots: List[TimeSlot]):
+        if not candidate_slots:
+            return None
 
         priority_queue = []
 
@@ -46,174 +50,178 @@ class AStarScheduler:
 
             heapq.heappush(
                 priority_queue,
-                (total_cost, slot.day, slot.hour, slot)
+                (total_cost, index, slot)
             )
 
-        return heapq.heappop(priority_queue)[3]
+        return heapq.heappop(priority_queue)[2]
 
 
 # =====================================================
-# CO3 : CSP & CONFLICT MANAGEMENT
+# CO3 : CSP SCHEDULING
 # =====================================================
 
 class CSPScheduler:
 
     def __init__(self):
-        self.busy_map: Dict[TimeSlot, Set[str]] = {}
+        # Maps an interviewer's slot key to a set of assigned candidates
+        self.busy_map: Dict[str, Set[str]] = {}
         self.assignments = {}
 
     def is_consistent(self, interviewer_name, slot):
-
-        if slot in self.busy_map:
-            if interviewer_name in self.busy_map[slot]:
-                return False
-
-        return True
+        key = (
+            f"{interviewer_name}_"
+            f"{slot.day.lower()}_"
+            f"{slot.hour.lower()}"
+        )
+        return key not in self.busy_map
 
     def assign(self, candidate, interviewer_name, slot):
-
         if not self.is_consistent(interviewer_name, slot):
             return False
+
+        key = (
+            f"{interviewer_name}_"
+            f"{slot.day.lower()}_"
+            f"{slot.hour.lower()}"
+        )
+
+        # Fixes the overwriting bug by cleanly initializing/adding to the reservation
+        if key not in self.busy_map:
+            self.busy_map[key] = set()
+        self.busy_map[key].add(candidate.name)
 
         self.assignments[candidate.id] = (
             interviewer_name,
             slot
         )
-
-        if slot not in self.busy_map:
-            self.busy_map[slot] = set()
-
-        self.busy_map[slot].add(interviewer_name)
-
         return True
 
 
 # =====================================================
-# CO4 : UTILITY BASED DECISION MAKING
+# CO4 : UTILITY FUNCTION
 # =====================================================
 
-def utility(priority):
-
-    utility_table = {
+def calculate_utility(priority):
+    table = {
         "High": 100,
         "Medium": 70,
         "Low": 40
     }
-
-    return utility_table.get(priority, 0)
+    return table.get(priority, 50)
 
 
 # =====================================================
-# CO5 : PROBABILISTIC SCHEDULING
+# CO5 : PROBABILISTIC INFERENCE
 # =====================================================
 
-def predict_cancellation():
+def infer_cancellation_risk():
+    probability = round(
+        random.uniform(0.10, 0.95),
+        2
+    )
 
-    probability = round(random.uniform(0, 1), 2)
-
-    if probability > 0.7:
-        risk = "High"
-
-    elif probability > 0.4:
-        risk = "Medium"
-
+    if probability > 0.70:
+        risk = "High Risk"
+    elif probability > 0.40:
+        risk = "Medium Risk"
     else:
-        risk = "Low"
+        risk = "Low Risk"
 
     return probability, risk
 
 
 # =====================================================
-# CO6 : INTEGRATION & PERFORMANCE ANALYSIS
+# CO6 : INTEGRATED AI AGENT
 # =====================================================
 
 class AutomatedInterviewScheduler:
 
-    def __init__(self):
-
+    def __init__(self, fallback_hours):
         self.astar = AStarScheduler()
         self.csp = CSPScheduler()
-
+        self.fallback_hours = fallback_hours
         self.schedule_database = {}
 
-    def schedule_candidate(self, candidate, interviewer):
+    def assign_available_interviewer(self, interviewers, slot):
+        for interviewer in interviewers:
+            if self.csp.is_consistent(interviewer.name, slot):
+                return interviewer
+        return None
 
-        best_slot = self.astar.select_best_slot(
-            candidate.available_slots
-        )
+    def schedule_candidate(self, candidate, interviewers):
+        print(f"\n--- Scheduling {candidate.name} ---")
 
-        start_time = time.perf_counter()
+        slots_to_try = list(candidate.available_slots)
 
-        success = self.csp.assign(
-            candidate,
-            interviewer.name,
-            best_slot
-        )
+        while slots_to_try:
+            best_slot = self.astar.select_best_slot(slots_to_try)
+            
+            # Prevent infinite loops by removing the checked slot
+            if best_slot in slots_to_try:
+                slots_to_try.remove(best_slot)
 
-        end_time = time.perf_counter()
+            if best_slot.day.lower() in ["saturday", "sunday"]:
+                print("Weekend selected. Moved to Monday.")
+                best_slot = TimeSlot("Monday", best_slot.hour)
 
-        execution_time = (
-            end_time - start_time
-        ) * 1000
+            # Look for an interviewer available at the requested time
+            interviewer = self.assign_available_interviewer(interviewers, best_slot)
 
-        if success:
+            # -----------------------------------------------------------------
+            # RESCHEDULE TRIGGER: Triggered when slot/interviewer combination fails
+            # -----------------------------------------------------------------
+            if interviewer is None:
+                print(f"\n[CONFLICT DETECTED] Slot ({best_slot.day} at {best_slot.hour}) is completely booked.")
+                print("Initiating automatic fallback rescheduling...")
 
-            probability, risk = predict_cancellation()
+                found = False
+                for hour in self.fallback_hours:
+                    alternate_slot = TimeSlot(best_slot.day, hour)
+                    interviewer = self.assign_available_interviewer(interviewers, alternate_slot)
 
-            self.schedule_database[
-                candidate.name.lower()
-            ] = (
-                interviewer.name,
-                best_slot
-            )
+                    if interviewer:
+                        best_slot = alternate_slot
+                        found = True
+                        print(f"-> Reschedule successful! Moved to alternate time: {hour}")
+                        break
 
-            print("\n====================================")
-            print("Candidate           :", candidate.name)
-            print("Interviewer         :", interviewer.name)
-            print("Priority            :", candidate.priority)
-            print("Utility Score       :", utility(candidate.priority))
-            print(
-                "Assigned Slot       :",
-                best_slot.day,
-                best_slot.hour
-            )
-            print(
-                "Cancellation Chance :",
-                probability
-            )
-            print(
-                "Risk Level          :",
-                risk
-            )
-            print(
-                f"Execution Time      : {execution_time:.4f} ms"
-            )
-            print("====================================")
+                if not found:
+                    print(f"\n[RESCHEDULE FAILED] No fallbacks or alternative interviewers found for {candidate.name}.")
+                    return False
 
-        else:
-            print(
-                f"Conflict detected for {candidate.name}"
-            )
+            # Assign and commit the successful slot
+            start = time.perf_counter()
+            success = self.csp.assign(candidate, interviewer.name, best_slot)
+            end = time.perf_counter()
+
+            execution_time = (end - start) * 1000
+
+            if success:
+                self.schedule_database[candidate.name.lower()] = (interviewer.name, best_slot)
+                probability, risk = infer_cancellation_risk()
+
+                print("\n========================")
+                print("Candidate :", candidate.name)
+                print("Interviewer :", interviewer.name)
+                print("Slot :", best_slot.day, "at", best_slot.hour)
+                print("Utility :", calculate_utility(candidate.priority))
+                print("Cancellation Risk :", probability, risk)
+                print("Execution Time :", round(execution_time, 5), "ms")
+                print("========================")
+                return True
+
+        return False
 
     def search_candidate(self, name):
-
         key = name.lower()
-
         if key in self.schedule_database:
-
             interviewer, slot = self.schedule_database[key]
-
-            print("\nSEARCH RESULT")
-            print("Candidate  :", name)
-            print("Interviewer:", interviewer)
-            print(
-                "Schedule   :",
-                slot.day,
-                slot.hour
-            )
-
+            print("\n===== RECORD FOUND =====")
+            print("Candidate :", name)
+            print("Interviewer :", interviewer)
+            print("Schedule :", slot.day, "at", slot.hour)
         else:
-            print("Candidate not found.")
+            print("Record not found.")
 
 
 # =====================================================
@@ -222,62 +230,47 @@ class AutomatedInterviewScheduler:
 
 if __name__ == "__main__":
 
-    slot1 = TimeSlot("Monday", "10:00 AM")
-    slot2 = TimeSlot("Monday", "11:00 AM")
-    slot3 = TimeSlot("Monday", "12:00 PM")
-
-    interviewer1 = Interviewer(
-        "I1",
-        "Dr. Ashok",
-        [slot1, slot2, slot3]
-    )
-
-    candidates = [
-
-        Candidate(
-            "C1",
-            "Charitha",
-            [slot1, slot2],
-            "High"
-        ),
-
-        Candidate(
-            "C2",
-            "Sahithi",
-            [slot2, slot3],
-            "Medium"
-        ),
-
-        Candidate(
-            "C3",
-            "Sabiya",
-            [slot1, slot3],
-            "Low"
-        )
+    system_hours = [
+        "10:00 AM",
+        "11:00 AM",
+        "12:00 PM",
+        "02:00 PM",
+        "03:00 PM"
     ]
 
-    scheduler = AutomatedInterviewScheduler()
+    interviewers = [
+        Interviewer("I1", "Dr. Ashok"),
+        Interviewer("I2", "Dr. Srinivasan"),
+        Interviewer("I3", "Dr. Radhika"),
+        Interviewer("I4", "Prof. Anand"),
+        Interviewer("I5", "Dr. K. Satya Prasad")
+    ]
 
-    print(
-        "\n===== AUTOMATED INTERVIEW SLOT SCHEDULER ====="
-    )
+    scheduler = AutomatedInterviewScheduler(fallback_hours=system_hours)
 
-    candidates.sort(
-        key=lambda x: utility(x.priority),
-        reverse=True
-    )
+    while True:
+        print("\n===== INTERVIEW REGISTRATION =====")
+        name = input("Enter Candidate Name (or exit): ").strip()
 
-    for candidate in candidates:
+        if name.lower() == "exit":
+            break
 
-        scheduler.schedule_candidate(
-            candidate,
-            interviewer1
+        priority = input("Enter Priority (High/Medium/Low): ").strip().capitalize()
+        if priority not in ["High", "Medium", "Low"]:
+            priority = "Medium"
+
+        day = input("Enter Preferred Day: ").strip().capitalize()
+        hour = input("Enter Preferred Time: ").strip().upper()
+
+        candidate = Candidate(
+            id=f"C_{random.randint(100,999)}",
+            name=name,
+            available_slots=[TimeSlot(day, hour)],
+            priority=priority
         )
 
-    print("\n===== SEARCH MODULE =====")
+        scheduler.schedule_candidate(candidate, interviewers)
 
-    search_name = input(
-        "\nEnter Candidate Name to Search: "
-    )
-
+    print("\n===== SEARCH RECORD =====")
+    search_name = input("Enter Candidate Name: ")
     scheduler.search_candidate(search_name)
